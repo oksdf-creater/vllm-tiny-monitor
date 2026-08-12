@@ -1,0 +1,16 @@
+[Unit]
+Description=vLLM lightweight monitoring dashboard
+After=network-online.target
+
+[Service]
+Type=simple
+User=CHANGE_ME
+WorkingDirectory=/opt/vllm-monitor
+Environment=VLLM_METRICS_URL=http://127.0.0.1:8000/metrics
+Environment=MONITOR_PORT=8088
+ExecStart=/usr/bin/python3 /opt/vllm-monitor/app.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
