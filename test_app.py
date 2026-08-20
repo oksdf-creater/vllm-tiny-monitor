@@ -59,10 +59,12 @@ vllm:prefill_completed_seconds_total {seconds}
             self.assertEqual(collector.latest["prefill_rate_state"], "final")
             self.assertEqual(collector.latest["prefill_rate"], 1304)
             self.assertEqual(collector.latest["prefill_trend_rate"], 1304)
+            self.assertEqual(collector.latest["task_generation_tokens"], 1)
             self.assertEqual(collector.latest["task_avg_decode_rate"], 1)
             collector.collect()
             self.assertEqual(collector.latest["prefill_rate"], 1304)
             self.assertEqual(collector.latest["prefill_trend_rate"], 0)
+            self.assertEqual(collector.latest["task_generation_tokens"], 2)
             self.assertEqual(collector.latest["task_avg_decode_rate"], 1)
 
     def test_legacy_vllm_falls_back_to_finished_prefill_metrics(self):
@@ -90,6 +92,7 @@ vllm:request_prefill_time_seconds_sum {prefill_time}
             collector.collect()
             self.assertEqual(collector.latest["prefill_rate"], 1304)
             self.assertEqual(collector.latest["prefill_rate_state"], "final")
+            self.assertEqual(collector.latest["task_generation_tokens"], 10)
 
 
 if __name__ == "__main__":

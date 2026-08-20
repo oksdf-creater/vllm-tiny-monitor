@@ -145,6 +145,7 @@ class Collector:
         self.task_started_at = None
         self.task_duration = None
         self.task_start_generation = None
+        self.task_generated_tokens = None
         self.task_avg_decode_rate = None
         self.gpus = []
         self.gpu_error = "Waiting for first sample"
@@ -186,7 +187,10 @@ class Collector:
             if active and not self.task_active:
                 self.task_started_at = now
                 self.task_duration = 0.0
-                self.task_start_generation = generation_total
+                self.task_start_generation = (
+                    self.previous["generation"] if self.previous is not None
+                    and self.previous["generation"] is not None else generation_total)
+                self.task_generated_tokens = 0.0
                 self.task_avg_decode_rate = 0.0
                 self.prefill_rate = 0.0
                 self.prefill_rate_state = "processing"
@@ -233,6 +237,7 @@ class Collector:
                     and self.task_start_generation is not None):
                 generated_for_task = max(
                     0.0, generation_total - self.task_start_generation)
+                self.task_generated_tokens = generated_for_task
                 self.task_avg_decode_rate = generated_for_task / self.task_duration
             self.task_active = active
             self.previous = {"time": now, "generation": generation_total,
@@ -262,6 +267,7 @@ class Collector:
                 "prefill_rate_state": self.prefill_rate_state,
                 "decode_rate": point["decode_rate"], "prompt_tokens_total": prompt_total,
                 "generation_tokens_total": generation_total,
+                "task_generation_tokens": self.task_generated_tokens,
                 "tokens_total": None if prompt_total is None or generation_total is None else prompt_total + generation_total,
                 "requests_running": running, "requests_waiting": waiting,
                 "requests_finished": success, "kv_cache_usage": None if cache is None else cache * 100,
