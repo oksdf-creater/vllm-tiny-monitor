@@ -19,7 +19,7 @@ PORT = int(os.getenv("MONITOR_PORT", "8088"))
 INTERVAL = max(float(os.getenv("POLL_INTERVAL", "1")), 0.5)
 ACTIVE_INTERVAL = max(float(os.getenv("ACTIVE_POLL_INTERVAL", "0.5")), 0.2)
 GPU_INTERVAL = max(float(os.getenv("GPU_POLL_INTERVAL", "2")), INTERVAL)
-HISTORY_SIZE = max(int(os.getenv("HISTORY_SIZE", "900")), 10)
+HISTORY_SIZE = max(int(os.getenv("HISTORY_SIZE", "600")), 10)
 STATIC = Path(__file__).with_name("static")
 
 SAMPLE_RE = re.compile(r'^([^\s{]+)(?:\{([^}]*)\})?\s+([-+\w.]+)(?:\s+\d+)?$')
@@ -146,7 +146,12 @@ class Collector:
         self.task_duration = None
         self.task_start_generation = None
         self.task_generated_tokens = None
+        self.decode_started_at = None
+        self.decode_start_generation = None
         self.task_avg_decode_rate = None
+        self.task_peak_decode_rate = None
+        self.last_task_avg_decode_rate = None
+        self.last_task_peak_decode_rate = None
         self.gpus = []
         self.gpu_error = "Waiting for first sample"
         self.last_gpu_poll = 0.0
@@ -184,14 +189,23 @@ class Collector:
             success = metric_sum(samples, "vllm:request_success_total", "vllm_request_success_total")
             decode_rate = 0.0
             active = (running or 0) + (waiting or 0) > 0
+            task_finished = self.task_active and not active
             if active and not self.task_active:
-                self.task_started_at = now
-                self.task_duration = 0.0
+                # The request started somewhere after the previous poll. Use
+                # that poll as the conservative boundary because the token
+                # baseline below comes from the same sample. This keeps the
+                # cumulative average and sampled peak on one time window.
+                self.task_started_at = (
+                    self.previous["time"] if self.previous is not None else now)
+                self.task_duration = now - self.task_started_at
                 self.task_start_generation = (
                     self.previous["generation"] if self.previous is not None
                     and self.previous["generation"] is not None else generation_total)
                 self.task_generated_tokens = 0.0
+                self.decode_started_at = None
+                self.decode_start_generation = None
                 self.task_avg_decode_rate = 0.0
+                self.task_peak_decode_rate = 0.0
                 self.prefill_rate = 0.0
                 self.prefill_rate_state = "processing"
             if self.previous:
@@ -200,6 +214,20 @@ class Collector:
                 if generation_total is not None and self.previous["generation"] is not None:
                     generation_delta = max(0.0, generation_total - self.previous["generation"])
                     decode_rate = generation_delta / elapsed
+                    if generation_delta > 0 and self.decode_started_at is None:
+                        if task_finished:
+                            # A very short request completed between polls. In
+                            # that case the poll interval is the only usable
+                            # Decode window, so retain it instead of reporting 0.
+                            self.decode_started_at = self.previous["time"]
+                            self.decode_start_generation = self.previous["generation"]
+                        else:
+                            # The first non-zero sample may contain an unknown
+                            # amount of Prefill/Think time. Establish the Decode
+                            # baseline here and start reporting on the next poll.
+                            self.decode_started_at = now
+                            self.decode_start_generation = generation_total
+                            decode_rate = 0.0
                 has_live_prefill_metrics = completed_prefill_requests is not None
                 if (has_live_prefill_metrics
                         and self.previous["completed_prefill_requests"] is not None
@@ -232,13 +260,26 @@ class Collector:
                 self.task_duration = now - self.task_started_at
             elif self.task_active and self.task_started_at is not None:
                 self.task_duration = now - self.task_started_at
-            if (self.task_duration is not None and self.task_duration > 0
-                    and generation_total is not None
+            if (generation_total is not None
                     and self.task_start_generation is not None):
                 generated_for_task = max(
                     0.0, generation_total - self.task_start_generation)
                 self.task_generated_tokens = generated_for_task
-                self.task_avg_decode_rate = generated_for_task / self.task_duration
+            if (self.decode_started_at is not None
+                    and self.decode_start_generation is not None
+                    and generation_total is not None
+                    and now > self.decode_started_at):
+                decoded_tokens = max(
+                    0.0, generation_total - self.decode_start_generation)
+                self.task_avg_decode_rate = (
+                    decoded_tokens / (now - self.decode_started_at))
+            if ((active or task_finished) and self.decode_started_at is not None
+                    and self.task_peak_decode_rate is not None):
+                self.task_peak_decode_rate = max(
+                    self.task_peak_decode_rate, decode_rate)
+            if task_finished:
+                self.last_task_avg_decode_rate = self.task_avg_decode_rate
+                self.last_task_peak_decode_rate = self.task_peak_decode_rate
             self.task_active = active
             self.previous = {"time": now, "generation": generation_total,
                              "prefill_tokens": prefill_tokens_total,
@@ -275,6 +316,15 @@ class Collector:
                 "task_duration_seconds": None if self.task_duration is None else round(self.task_duration, 1),
                 "task_avg_decode_rate": (None if self.task_avg_decode_rate is None
                                          else round(self.task_avg_decode_rate, 2)),
+                "task_peak_decode_rate": (
+                    None if self.task_peak_decode_rate is None
+                    else round(self.task_peak_decode_rate, 2)),
+                "last_task_avg_decode_rate": (
+                    None if self.last_task_avg_decode_rate is None
+                    else round(self.last_task_avg_decode_rate, 2)),
+                "last_task_peak_decode_rate": (
+                    None if self.last_task_peak_decode_rate is None
+                    else round(self.last_task_peak_decode_rate, 2)),
                 "gpus": gpus, "gpu_error": gpu_error,
                 "server": server, "server_error": server_error}
 

@@ -60,12 +60,14 @@ vllm:prefill_completed_seconds_total {seconds}
             self.assertEqual(collector.latest["prefill_rate"], 1304)
             self.assertEqual(collector.latest["prefill_trend_rate"], 1304)
             self.assertEqual(collector.latest["task_generation_tokens"], 1)
-            self.assertEqual(collector.latest["task_avg_decode_rate"], 1)
+            self.assertEqual(collector.latest["task_avg_decode_rate"], 0)
+            self.assertEqual(collector.latest["task_peak_decode_rate"], 0)
             collector.collect()
             self.assertEqual(collector.latest["prefill_rate"], 1304)
             self.assertEqual(collector.latest["prefill_trend_rate"], 0)
             self.assertEqual(collector.latest["task_generation_tokens"], 2)
             self.assertEqual(collector.latest["task_avg_decode_rate"], 1)
+            self.assertEqual(collector.latest["task_peak_decode_rate"], 1)
 
     def test_legacy_vllm_falls_back_to_finished_prefill_metrics(self):
         def metrics(running, generation, prefill_tokens, prefill_time):
@@ -93,6 +95,31 @@ vllm:request_prefill_time_seconds_sum {prefill_time}
             self.assertEqual(collector.latest["prefill_rate"], 1304)
             self.assertEqual(collector.latest["prefill_rate_state"], "final")
             self.assertEqual(collector.latest["task_generation_tokens"], 10)
+            self.assertEqual(collector.latest["last_task_avg_decode_rate"], 10)
+            self.assertEqual(collector.latest["last_task_peak_decode_rate"], 10)
+
+    def test_average_cannot_exceed_peak_when_tokens_arrive_before_detection(self):
+        def metrics(running, generation):
+            return MetricsResponse(f"""
+vllm:num_requests_running {running}
+vllm:num_requests_waiting 0
+vllm:generation_tokens_total {generation}
+vllm:prompt_tokens_total 0
+""")
+
+        responses = [metrics(0, 0), metrics(1, 5), metrics(1, 15)]
+        collector = Collector()
+        with patch("app.urllib.request.urlopen", side_effect=responses), \
+                patch("app.time.time", side_effect=[100, 101, 102]), \
+                patch("app.gpu_stats", return_value=([], None)), \
+                patch("app.server_stats", return_value=({}, None, None)):
+            collector.collect()
+            collector.collect()
+            collector.collect()
+            self.assertEqual(collector.latest["task_avg_decode_rate"], 10)
+            self.assertEqual(collector.latest["task_peak_decode_rate"], 10)
+            self.assertLessEqual(collector.latest["task_avg_decode_rate"],
+                                 collector.latest["task_peak_decode_rate"])
 
 
 if __name__ == "__main__":
